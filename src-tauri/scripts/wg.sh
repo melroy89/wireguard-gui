@@ -60,8 +60,11 @@ if has_nmcli; then
 
   conn_name="wg-gui-${profile}"
 
-  # Check if connection is active and disconnect it
-  if run_with_timeout 10 nmcli -t -f NAME connection show --active 2>/dev/null | grep -Fxq "$conn_name"; then
+  # A failed status query must never be treated as a disconnected tunnel.
+  active_connections=$(run_with_timeout 10 nmcli -t -f NAME connection show --active) || {
+    fail "Failed to query active NetworkManager connections"
+  }
+  if grep -Fxq -- "$conn_name" <<< "$active_connections"; then
     if [[ "$wg_action" == "connect" ]]; then
       echo "Connection $conn_name already connected"
       exit 0
@@ -84,7 +87,10 @@ if has_nmcli; then
   fi
 
   # Clean up any old connections with the same name (handles renames/updates)
-  if run_with_timeout 10 nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$conn_name"; then
+  existing_connections=$(run_with_timeout 10 nmcli -t -f NAME connection show) || {
+    fail "Failed to query NetworkManager connections"
+  }
+  if grep -Fxq -- "$conn_name" <<< "$existing_connections"; then
     echo "Removing old connection $conn_name..."
     run_with_timeout 10 nmcli connection delete "$conn_name" 2>&1 || {
       fail "Failed to delete old connection $conn_name"
@@ -99,32 +105,21 @@ if has_nmcli; then
     exit 10
   fi
 
-  # Extract the imported connection name
-  imported_name=$(printf '%s\n' "$import_output" | sed -n "s/.*Connection '\([^']*\)'.*/\1/p" | head -n 1)
-
-  if [[ -z "$imported_name" ]]; then
-    echo "Failed to extract imported connection name from: $import_output" >&2
-    exit 10
+  # Connection IDs are not unique. Use the imported UUID so a duplicate
+  # user-created connection name can never be modified or activated instead.
+  imported_uuid=$(printf '%s\n' "$import_output" | sed -nE 's/.*\(([[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12})\).*/\1/p' | head -n 1)
+  if [[ -z "$imported_uuid" ]]; then
+    fail "Failed to extract imported connection UUID from: $import_output" 10
   fi
 
-  # Rename to our standard naming convention if needed
-  if [[ "$imported_name" != "$conn_name" ]]; then
-    echo "Renaming connection from $imported_name to $conn_name..."
-    if ! run_with_timeout 10 nmcli connection modify "$imported_name" connection.id "$conn_name" 2>&1; then
-      fail "Failed to rename imported connection"
-    fi
+  echo "Configuring imported connection $imported_uuid as $conn_name..."
+  if ! run_with_timeout 10 nmcli connection modify uuid "$imported_uuid" connection.id "$conn_name" connection.autoconnect no 2>&1; then
+    fail "Failed to configure imported connection" 10
   fi
 
-  # Keep app-managed connections manual; do not auto-connect on boot.
-  if ! run_with_timeout 10 nmcli connection modify "$conn_name" connection.autoconnect no 2>&1; then
-    fail "Failed to disable autoconnect for $conn_name"
-  fi
-
-  # Bring up the connection
   echo "Bringing up connection $conn_name..."
-  if ! run_with_timeout 20 nmcli connection up "$conn_name" 2>&1; then
-    echo "Failed to bring up connection $conn_name" >&2
-    exit 11
+  if ! run_with_timeout 20 nmcli connection up uuid "$imported_uuid" 2>&1; then
+    fail "Failed to bring up connection $conn_name" 11
   fi
   echo "Connection $conn_name brought up successfully"
   exit 0

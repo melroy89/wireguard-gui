@@ -17,6 +17,8 @@ scenario = os.environ["SCENARIO"]
 if args == ["--version"]:
     print("nmcli 1.46")
 elif args == ["-t", "-f", "NAME", "connection", "show", "--active"]:
+    if scenario == "query-fails":
+        sys.exit(1)
     if scenario in ["active", "down-fails"]:
         print("wg-gui-home")
 elif args == ["-t", "-f", "NAME", "connection", "show"]:
@@ -25,7 +27,7 @@ elif args[:2] == ["connection", "down"] and scenario == "down-fails":
     print("not authorized", file=sys.stderr)
     sys.exit(1)
 elif args[:2] == ["connection", "import"]:
-    print("Connection 'home' (uuid) successfully added.")
+    print("Connection 'home' (12345678-1234-1234-1234-123456789abc) successfully added.")
 elif args[:2] == ["connection", "modify"] and scenario == "rename-fails":
     sys.exit(1)
 '''
@@ -65,7 +67,14 @@ class ConnectionScriptTests(unittest.TestCase):
         result, calls = self.run_script("inactive", "connect")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("connection delete home", calls)
-        self.assertIn("connection up wg-gui-home", calls)
+        self.assertIn("connection modify uuid 12345678-1234-1234-1234-123456789abc connection.id wg-gui-home", calls)
+        self.assertIn("connection up uuid 12345678-1234-1234-1234-123456789abc", calls)
+
+    def test_failed_active_query_is_not_reported_as_disconnected(self):
+        result, calls = self.run_script("query-fails", "disconnect")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Failed to query active", result.stderr)
+        self.assertNotIn("connection down", calls)
 
     def test_rename_failure_stops_before_activation(self):
         result, calls = self.run_script("rename-fails", "connect")
