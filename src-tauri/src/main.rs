@@ -1283,11 +1283,15 @@ async fn run_app() {
     let app_handle = app.handle().clone();
     let monitor_state = setup_app_state.clone();
     tauri::async_runtime::spawn(async move {
-      let _ = sync_connection_state(&app_handle, &monitor_state).await;
+      {
+        let _operation = PROFILE_OPERATION_LOCK.lock().await;
+        let _ = sync_connection_state(&app_handle, &monitor_state).await;
+      }
       let mut interval = tokio::time::interval(Duration::from_secs(1));
       interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
       loop {
         interval.tick().await;
+        let _operation = PROFILE_OPERATION_LOCK.lock().await;
         let _ = sync_connection_state(&app_handle, &monitor_state).await;
       }
     });
