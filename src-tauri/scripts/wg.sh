@@ -31,7 +31,7 @@ if [[ -z "$profile" ]]; then
   exit 2
 fi
 
-if [[ "$wg_action" != "toggle" && "$wg_action" != "disconnect" ]]; then
+if [[ "$wg_action" != "toggle" && "$wg_action" != "connect" && "$wg_action" != "disconnect" ]]; then
   fail "Invalid WG_ACTION: $wg_action" 2
 fi
 
@@ -62,9 +62,13 @@ if has_nmcli; then
 
   # Check if connection is active and disconnect it
   if run_with_timeout 10 nmcli -t -f NAME connection show --active 2>/dev/null | grep -Fxq "$conn_name"; then
+    if [[ "$wg_action" == "connect" ]]; then
+      echo "Connection $conn_name already connected"
+      exit 0
+    fi
     echo "Disconnecting $conn_name..."
     run_with_timeout 15 nmcli connection down "$conn_name" 2>&1 || {
-      echo "Warning: Failed to disconnect $conn_name" >&2
+      fail "Failed to disconnect $conn_name"
     }
     echo "Connection $conn_name brought down"
     exit 0
@@ -83,15 +87,7 @@ if has_nmcli; then
   if run_with_timeout 10 nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$conn_name"; then
     echo "Removing old connection $conn_name..."
     run_with_timeout 10 nmcli connection delete "$conn_name" 2>&1 || {
-      echo "Warning: Failed to delete old connection $conn_name" >&2
-    }
-  fi
-
-  # Also clean up connection with the profile name
-  if run_with_timeout 10 nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$profile"; then
-    echo "Removing old connection $profile..."
-    run_with_timeout 10 nmcli connection delete "$profile" 2>&1 || {
-      echo "Warning: Failed to delete old connection $profile" >&2
+      fail "Failed to delete old connection $conn_name"
     }
   fi
 
@@ -115,13 +111,13 @@ if has_nmcli; then
   if [[ "$imported_name" != "$conn_name" ]]; then
     echo "Renaming connection from $imported_name to $conn_name..."
     if ! run_with_timeout 10 nmcli connection modify "$imported_name" connection.id "$conn_name" 2>&1; then
-      echo "Warning: Failed to rename connection" >&2
+      fail "Failed to rename imported connection"
     fi
   fi
 
   # Keep app-managed connections manual; do not auto-connect on boot.
   if ! run_with_timeout 10 nmcli connection modify "$conn_name" connection.autoconnect no 2>&1; then
-    echo "Warning: Failed to disable autoconnect for $conn_name" >&2
+    fail "Failed to disable autoconnect for $conn_name"
   fi
 
   # Bring up the connection
@@ -161,6 +157,10 @@ fi
 
 # Toggle the connection
 if ip link show dev "$profile" >/dev/null 2>&1; then
+  if [[ "$wg_action" == "connect" ]]; then
+    echo "Interface $profile already connected"
+    exit 0
+  fi
   # Interface exists, bring it down
   echo "Bringing down interface $profile..."
   wg-quick down "$profile"
@@ -176,7 +176,8 @@ else
   fi
 
   # Copy profile to system wireguard directory
-  cp -f "$user_conf" "$profile_path"
+  install -d -m 700 /etc/wireguard
+  install -m 600 "$user_conf" "$profile_path"
 
   # Interface doesn't exist, bring it up
   echo "Bringing up interface $profile..."
